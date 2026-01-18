@@ -1,0 +1,137 @@
+#include <ArduinoBLE.h>
+#include <Wire.h>
+#include "rgb_lcd.h"
+
+// ---------------- PINS ----------------
+#define SOIL_PIN     A0
+#define GREEN_LED    11
+#define YELLOW_LED   12
+#define RED_LED      13
+#define BUZZER_PIN   8
+#define LIGHT_DO     3   // Light sensor digital output
+
+// ---------------- BLE ----------------
+BLEService plantService("181A");
+BLEStringCharacteristic plantDataChar("2A58", BLERead | BLENotify, 100);
+
+// ---------------- LCD ----------------
+rgb_lcd lcd;
+
+// ---------------- Prediction ----------------
+const int DRY_THRESHOLD = 40;      // Soil % considered dry
+const float DEFAULT_DRY_RATE = 5;  // % per hour
+const float MIN_DEMO_HOURS = 2.0;  // Minimum hours for demo visibility
+
+float hours_to_dry = MIN_DEMO_HOURS;
+unsigned long predictionStartTime = 0;
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LIGHT_DO, INPUT);
+
+  lcd.begin(16,2);
+  lcd.setRGB(0, 255, 0);
+  lcd.setCursor(0,0);
+  lcd.print("Plant Monitor R4");
+
+  // ---------------- BLE ----------------
+  if (!BLE.begin()) while(1);
+  BLE.setLocalName("PlantMonitor_R4");
+  BLE.setAdvertisedService(plantService);
+  plantService.addCharacteristic(plantDataChar);
+  BLE.addService(plantService);
+  BLE.advertise();
+
+  // Start prediction timer
+  predictionStartTime = millis();
+}
+
+void loop() {
+  BLEDevice central = BLE.central();
+
+  if (central) {
+    Serial.print("Connected to: ");
+    Serial.println(central.address());
+
+    while (central.connected()) {
+      int soilRaw = analogRead(SOIL_PIN);
+      int soilPercent = map(soilRaw, 1023, 0, 0, 100);
+      soilPercent = constrain(soilPercent, 0, 100);
+
+      String soilStatus;
+      String ledStatus;
+      String buzzerStatus = "OFF";
+
+      // LED & Buzzer Logic
+      digitalWrite(GREEN_LED, LOW);
+      digitalWrite(YELLOW_LED, LOW);
+      digitalWrite(RED_LED, LOW);
+      digitalWrite(BUZZER_PIN, LOW);
+
+      if (soilPercent >= 80) {
+        soilStatus = "Wet";
+        ledStatus = "GREEN";
+        digitalWrite(GREEN_LED, HIGH);
+      } else if (soilPercent >= 40) {
+        soilStatus = "Moist";
+        ledStatus = "YELLOW";
+        digitalWrite(YELLOW_LED, HIGH);
+      } else {
+        soilStatus = "Dry";
+        ledStatus = "RED";
+        buzzerStatus = "ON";
+        digitalWrite(RED_LED, HIGH);
+        digitalWrite(BUZZER_PIN, HIGH);
+      }
+
+      // Light Status (corrected)
+      int lightValue = digitalRead(LIGHT_DO);
+      String lightStatus = (lightValue == LOW) ? "Day" : "Night"; // LOW = Day, HIGH = Night
+
+      // ---------------- Prediction Logic ----------------
+      float rate = DEFAULT_DRY_RATE;
+      if (soilPercent < 80 && soilPercent > DRY_THRESHOLD) rate = 2.0; // demo minimum
+
+      hours_to_dry = max((soilPercent - DRY_THRESHOLD) / rate, MIN_DEMO_HOURS);
+
+      // Countdown percentage
+      float elapsedHours = (millis() - predictionStartTime) / 3600000.0;
+      float remainingHours = max(0.0, hours_to_dry - elapsedHours);
+      float percentRemaining = max(0.0, remainingHours / hours_to_dry * 100.0);
+
+      // ---------------- Prepare BLE & LCD ----------------
+      char payload[100];
+      sprintf(payload, "Soil:%d%%|%s|%s|%s|%s|Water: %.1fh [%.0f%%]",
+              soilPercent, soilStatus.c_str(), ledStatus.c_str(),
+              buzzerStatus.c_str(), lightStatus.c_str(),
+              remainingHours, percentRemaining);
+
+      plantDataChar.writeValue(payload);
+      Serial.println(payload);
+
+      // LCD display
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("Soil:");
+      lcd.print(soilPercent);
+      lcd.print("% ");
+      lcd.print(soilStatus);
+      lcd.setCursor(0,1);
+      lcd.print("Water:");
+      lcd.print(remainingHours,1);
+      lcd.print("h [");
+      lcd.print(percentRemaining,0);
+      lcd.print("%]");
+
+      delay(2000);
+    }
+
+    Serial.println("Disconnected from Raspberry Pi");
+    predictionStartTime = millis(); // reset countdown on reconnect
+  }
+}
