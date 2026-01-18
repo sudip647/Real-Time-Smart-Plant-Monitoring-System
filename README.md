@@ -1,1 +1,0 @@
-# Real-Time-Smart-Plant-Monitoring-System
