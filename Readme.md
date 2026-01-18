@@ -1,4 +1,4 @@
-# Plant Monitoring Edge AI with Arduino UNO R4 and Raspberry Pi 4
+# Real Time smart Plant Monitoring Edge AI with Arduino UNO R4 and Raspberry Pi 4
 
 This project monitors soil moisture, predicts watering needs, and tracks light conditions using an **Arduino UNO R4** with BLE and a **Raspberry Pi 4** as the Edge AI platform. Data is displayed on an **LCD**, logged locally, and sent to **ThingSpeak** for cloud monitoring.
 
