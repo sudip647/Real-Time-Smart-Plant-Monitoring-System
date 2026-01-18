@@ -1,0 +1,94 @@
+import asyncio
+from bleak import BleakScanner, BleakClient
+from datetime import datetime
+import requests
+
+# BLE & Arduino
+CHARACTERISTIC_UUID = "2A58"
+DEVICE_NAME = "PlantMonitor_R4"
+LOG_FILE = "ble_plant_log.txt"
+
+# ThingSpeak
+THINGSPEAK_WRITE_API_KEY = "LYSSZ2E67R9HZST4"
+THINGSPEAK_CHANNEL_ID = 3231280
+THINGSPEAK_URL = "https://api.thingspeak.com/update"
+
+# Status encoding
+status_map = {"Wet":3, "Moist":2, "Dry":1}
+led_map = {"GREEN":3, "YELLOW":2, "RED":1}
+buzzer_map = {"ON":1, "OFF":0}
+light_map = {"Day":1, "Night":0}
+
+async def run():
+    print("Scanning for PlantMonitor_R4...")
+    device = await BleakScanner.find_device_by_filter(lambda d, ad: d.name == DEVICE_NAME)
+    if not device:
+        print("Device not found!")
+        return
+
+    async with BleakClient(device) as client:
+        if not client.is_connected:
+            print("Failed to connect!")
+            return
+        print("Connected! Receiving data...\n")
+
+        while client.is_connected:
+            try:
+                value = await client.read_gatt_char(CHARACTERISTIC_UUID)
+                decoded = value.decode("utf-8").strip()
+                timestamp = datetime.now()
+
+                # Parse payload
+                parts = decoded.split("|")
+                if len(parts) == 6:
+                    soil = int(parts[0].split(":")[1].replace("%",""))
+                    status = parts[1]
+                    led = parts[2]
+                    buzzer = parts[3]
+                    light = parts[4]
+                    water_hours = float(parts[5].split(":")[1].split("h")[0].strip())
+                else:
+                    soil = 0
+                    status = "Unknown"
+                    led = "Unknown"
+                    buzzer = "Unknown"
+                    light = "Unknown"
+                    water_hours = 0.0
+
+                # ---------------- Dashboard ----------------
+                print(f"\r{timestamp.strftime('%H:%M:%S')} | Soil:{soil}% | {status} | LED:{led} | Buzzer:{buzzer} | Light:{light} | Water:{water_hours:.1f}h      ", end="")
+
+                # Log to file
+                with open(LOG_FILE, "a") as f:
+                    f.write(f"{timestamp.isoformat()} | {decoded}\n")
+
+                # ---------------- Encode and send to ThingSpeak ----------------
+                payload = {
+                    "api_key": THINGSPEAK_WRITE_API_KEY,
+                    "field1": soil,
+                    "field2": status_map.get(status,0),
+                    "field3": led_map.get(led,0),
+                    "field4": buzzer_map.get(buzzer,0),
+                    "field5": light_map.get(light,0),
+                    "field6": water_hours
+                }
+                try:
+                    r = requests.get(THINGSPEAK_URL, params=payload, timeout=5)
+                    if r.status_code != 200:
+                        print(f"\nThingSpeak error: {r.status_code}")
+                except Exception as e:
+                    print(f"\nThingSpeak exception: {e}")
+
+                await asyncio.sleep(15)  # ThingSpeak free API limit
+
+            except Exception as e:
+                print(f"\nError: {e}")
+                break
+
+        print("\nDisconnected from Arduino.")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\nStopping BLE client...")
